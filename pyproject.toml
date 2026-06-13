@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pharos-skill-inspector"
+version = "0.1.0"
+description = "Open-source security scanner for Pharos AI agent skills: detects prompt injection, data leakage, vulnerable dependencies, dangerous code, and on-chain (Web3) risks."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Pharos Skill Inspector contributors" }]
+keywords = ["pharos", "ai-agent", "skill", "security", "scanner", "web3", "prompt-injection"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+]
+# Zero required runtime dependencies — runs on a clean Python install.
+# OSV.dev lookups use the standard library (urllib). Optional extras below.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-cov>=4.0"]
+
+[project.scripts]
+pharos-skill-inspector = "pharos_skill_inspector.cli:main"
+psi = "pharos_skill_inspector.cli:main"
+
+# Set these to your repository once published, e.g.:
+# [project.urls]
+# Homepage = "https://github.com/<owner>/pharos-skill-inspector"
+# "Bug Tracker" = "https://github.com/<owner>/pharos-skill-inspector/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["pharos_skill_inspector"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true

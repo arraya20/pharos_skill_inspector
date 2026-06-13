@@ -1,0 +1,7 @@
+{
+  "atlantic-testnet": {
+    "chainId": 688689,
+    "rpcUrl": "https://atlantic.dplabs-internal.com",
+    "explorer": "https://atlantic.pharosscan.xyz"
+  }
+}

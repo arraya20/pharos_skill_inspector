@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Reports produced by the scanner
+*.report.json
+*.report.md
+*.report.sarif
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store

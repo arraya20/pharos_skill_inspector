@@ -1,0 +1,3 @@
+requests==2.19.1
+web3
+reqursts==2.31.0

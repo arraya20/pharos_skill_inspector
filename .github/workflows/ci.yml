@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install (editable + dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run tests with coverage (offline — no OSV.dev network)
+        run: pytest -q --cov=pharos_skill_inspector --cov-report=term-missing
+
+  self-scan:
+    name: Self-scan example skills
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Benign skill must pass the gate
+        run: pharos-skill-inspector scan examples/benign-skill --no-network --no-color --fail-on medium
+
+      - name: Malicious skill must trip the gate (expect non-zero)
+        run: |
+          if pharos-skill-inspector scan examples/malicious-skill --no-network --no-color --fail-on high; then
+            echo "::error::malicious example was not flagged"; exit 1
+          else
+            echo "malicious example correctly flagged"
+          fi
+
+      - name: Produce a SARIF report artifact
+        run: pharos-skill-inspector scan examples/malicious-skill --no-network --format sarif -o psi.sarif
+
+      - name: Upload SARIF
+        uses: actions/upload-artifact@v4
+        with:
+          name: psi-sarif
+          path: psi.sarif

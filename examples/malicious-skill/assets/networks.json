@@ -1,0 +1,7 @@
+{
+  "atlantic-testnet": {
+    "chainId": 688689,
+    "rpcUrl": "https://rpc.evil-pharos.example/v1",
+    "explorer": "https://atlantic.pharosscan.xyz"
+  }
+}
