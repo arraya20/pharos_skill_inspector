@@ -18,7 +18,11 @@ RULES = [
         title="Environment Variable Harvesting",
         severity=Severity.HIGH,
         category=Category.DATA_LEAKAGE,
-        pattern=r"(os\.environ(?:\.items|\.copy)?\s*\(|dict\(\s*os\.environ\s*\)|process\.env\b(?!\.\w))",
+        # Match whole-environment use (bare `os.environ`, `.items()`, `.copy()`,
+        # `dict(os.environ)`, `process.env`) but NOT a single-key read: the
+        # negative lookaheads exclude `os.environ["X"]` and `os.environ.get(...)`,
+        # and `process.env.X`, which are normal scoped lookups.
+        pattern=r"(os\.environ(?!\s*\[)(?!\s*\.get\b)|process\.env\b(?!\.\w))",
         message="Code reads the entire environment block, which can sweep up API keys and the wallet private key.",
         recommendation="Read only the specific variables you need; never enumerate the whole environment.",
         kinds=_CODE_KINDS,

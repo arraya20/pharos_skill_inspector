@@ -34,9 +34,9 @@ pharos-skill-inspector = "pharos_skill_inspector.cli:main"
 psi = "pharos_skill_inspector.cli:main"
 
 # Set these to your repository once published, e.g.:
-# [project.urls]
-# Homepage = "https://github.com/<owner>/pharos-skill-inspector"
-# "Bug Tracker" = "https://github.com/<owner>/pharos-skill-inspector/issues"
+[project.urls]
+Homepage = "https://github.com/arraya20/pharos_skill_inspector"
+"Bug Tracker" = "https://github.com/arraya20/pharos_skill_inspector/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

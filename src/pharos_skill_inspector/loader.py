@@ -56,9 +56,12 @@ _MAX_FILE_BYTES = 2_000_000  # 2 MB safety cap per file
 _MAX_EXTRACTED_BYTES = 100_000_000  # 100 MB cap on cumulative uncompressed size
 _MAX_ZIP_ENTRIES = 10_000           # refuse pathologically large archives
 
+# Directory-scan safety caps (apply to local dirs and cloned repos alike).
+_MAX_TOTAL_FILES = 5_000            # max files read in a single scan
+_MAX_TOTAL_BYTES = 200_000_000      # 200 MB cumulative across all scanned files
+
 # Remote-source handling (URLs / git repos / remote zips).
 _URL_RE = re.compile(r"^(https?|git|ssh)://", re.IGNORECASE)
-_GIT_HOSTS = ("github.com", "gitlab.com", "bitbucket.org", "codeberg.org", "git.sr.ht")
 _CLONE_TIMEOUT = 120          # seconds
 _MAX_DOWNLOAD_BYTES = 50_000_000  # 50 MB cap for remote zip downloads
 
@@ -207,10 +210,23 @@ def parse_frontmatter(text: str) -> dict[str, Any]:
 
 
 def _iter_files(root: Path):
+    """Yield regular files under ``root``, skipping skip-dirs and symlinks.
+
+    Symlinked files and directories are never followed: a malicious skill (or a
+    cloned repo) could otherwise point a symlink at ``/etc/passwd`` or anywhere
+    outside the scan root and have its contents read into a Component.
+    """
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        # Drop skip-dirs and any symlinked directories (don't descend them).
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in _SKIP_DIRS and not (Path(dirpath) / d).is_symlink()
+        ]
         for name in filenames:
-            yield Path(dirpath) / name
+            fpath = Path(dirpath) / name
+            if fpath.is_symlink():
+                continue  # never read through a symlink
+            yield fpath
 
 
 def _safe_extract_zip(zip_path: Path, extract_root: Path) -> None:
@@ -296,11 +312,19 @@ def load(source: str) -> LoadedSkill:
 
     skill = LoadedSkill(name=name, source=display_source, root=root, _tempdir=tempdir)
 
+    total_files = 0
+    total_bytes = 0
     for fpath in sorted(file_iter):
+        if total_files >= _MAX_TOTAL_FILES:
+            skill.errors.append(
+                f"scan truncated: more than {_MAX_TOTAL_FILES} files in source")
+            break
         kind = _kind_for(fpath)
         text, err = _read_text(fpath)
         if err:
             skill.errors.append(err)
+        total_files += 1
+        total_bytes += len(text)
         try:
             rel = str(fpath.relative_to(root))
         except ValueError:
@@ -316,6 +340,10 @@ def load(source: str) -> LoadedSkill:
         if fpath.name.lower() == "skill.md" and skill.skill_md is None:
             skill.skill_md = comp
             skill.frontmatter = parse_frontmatter(text)
+        if total_bytes > _MAX_TOTAL_BYTES:
+            skill.errors.append(
+                f"scan truncated: cumulative content exceeds {_MAX_TOTAL_BYTES} bytes")
+            break
 
     if skill.skill_md is not None and skill.frontmatter.get("name"):
         skill.name = str(skill.frontmatter["name"])

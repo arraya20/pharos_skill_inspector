@@ -54,6 +54,35 @@ def _attr_chain(node: ast.AST) -> str:
     return ".".join(reversed(parts))
 
 
+def _references_whole_environ(node: ast.AST) -> bool:
+    """True if ``node`` is a *whole-environment* reference.
+
+    Matches a bare ``os.environ`` / ``environ`` reference (e.g.
+    ``e = os.environ``), ``dict(os.environ)``, and ``os.environ.copy()`` — i.e.
+    the cases that sweep up every variable including the wallet key. It
+    deliberately does NOT match single-key reads like ``os.environ["X"]`` or
+    ``os.environ.get("X")`` (those are handled — and scoped to secret names —
+    elsewhere), so adding this source doesn't over-taint ordinary env lookups.
+
+    Only the top-level expression is inspected (callers pass the assignment RHS
+    or an individual sink argument), never walked subtrees, which is what keeps
+    ``os.environ.get("USERNAME")`` from being flagged via its inner attribute.
+    """
+    chain = _attr_chain(node)
+    if chain == "environ" or chain == "os.environ" or chain.endswith(".environ"):
+        return True
+    if isinstance(node, ast.Call):
+        fchain = _attr_chain(node.func)
+        if fchain.endswith("environ.copy"):
+            return True
+        if fchain == "dict":
+            for a in node.args:
+                ac = _attr_chain(a)
+                if ac == "environ" or ac == "os.environ" or ac.endswith(".environ"):
+                    return True
+    return False
+
+
 def _classify_sink(call: ast.Call) -> tuple | None:
     chain = _attr_chain(call.func)
     last = chain.rsplit(".", 1)[-1] if chain else ""
@@ -107,6 +136,11 @@ class _SourceChecker:
 
     def taints(self, node: ast.AST) -> bool:
         """True if any sub-expression is a source or references a tainted name."""
+        # Whole-environment references are checked on the top node only (never
+        # on walked subtrees) so a single-key read like os.environ.get("X")
+        # isn't tainted via its inner `os.environ` attribute.
+        if _references_whole_environ(node):
+            return True
         for sub in ast.walk(node):
             if isinstance(sub, ast.Name) and sub.id in self.tainted:
                 return True

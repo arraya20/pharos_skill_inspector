@@ -30,7 +30,7 @@ Each finding includes a rule ID, severity, location, redacted evidence, confiden
 ## Install
 
 ```bash
-git clone <your-repo-url> pharos-skill-inspector
+git clone https://github.com/arraya20/pharos_skill_inspector pharos-skill-inspector
 cd pharos-skill-inspector
 
 python3 -m venv .venv && source .venv/bin/activate
@@ -125,7 +125,7 @@ src/pharos_skill_inspector/
                    dependencies (OSV.dev), pharos_web3, taint (secret flows)
   analyzers/textproc.py  comment/string masking for token-aware scanning
 examples/          benign-skill (clean) + malicious-skill (demonstrates rules)
-tests/             pytest suite (70 tests, ~86% coverage)
+tests/             pytest suite (81 tests, ~88% coverage)
 .github/workflows/ CI: test matrix (Py 3.10–3.13) + example self-scan gate
 ```
 

