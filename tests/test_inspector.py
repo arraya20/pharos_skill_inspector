@@ -333,9 +333,27 @@ def test_npm_spec_parsing():
     assert parse_npm_spec(">=1.0.0 <2.0.0")[2] is True
     # wildcard / dist-tag -> no version, not CVE-checkable
     assert parse_npm_spec("*")[0] == "" and parse_npm_spec("latest")[0] == ""
-    # non-registry sources -> skip_cve
+    # Regression: wildcard / dist-tag are unpinned *registry* ranges, NOT
+    # non-registry sources -> is_range=True, skip_cve=False (else SC001 would be
+    # misreported as SC007 "non-registry source").
+    for tag in ("*", "x", "X", "latest", "next"):
+        v, pinned, is_range, skip = parse_npm_spec(tag)
+        assert (v, pinned, is_range, skip) == ("", False, True, False), tag
+    # empty spec -> nothing asserted
+    assert parse_npm_spec("") == ("", False, False, False)
+    # non-registry sources -> skip_cve, and NOT flagged as a range
     for spec in ("github:user/repo", "git+https://x/y.git", "file:../local", "workspace:*", "npm:alias@1.0.0"):
-        assert parse_npm_spec(spec)[3] is True
+        v, pinned, is_range, skip = parse_npm_spec(spec)
+        assert skip is True and is_range is False, spec
+
+
+def test_npm_wildcard_is_unpinned_not_nonregistry():
+    # Regression for SC007 misclassification: a `*` dependency must be reported
+    # as SC001 (unpinned), never SC007 (non-registry git/URL/local source).
+    pkg = comp("json", json.dumps({"dependencies": {"some-pkg": "*"}}), path="package.json")
+    ids = rule_ids(DependencyAnalyzer(use_network=False).analyze([pkg]))
+    assert "SC001" in ids
+    assert "SC007" not in ids
 
 
 def test_npm_package_json_findings():
@@ -465,6 +483,67 @@ def test_load_url_downloads_zip(monkeypatch):
         assert any(c.path.lower().endswith("skill.md") for c in skill.components)
     finally:
         skill.cleanup()
+
+
+# --------------------------------------------------------------------------
+# Zip extraction safety (Zip Slip / symlinks / decompression bombs)
+# --------------------------------------------------------------------------
+def test_load_zip_happy_path(tmp_path):
+    import zipfile
+    zpath = tmp_path / "ok.zip"
+    with zipfile.ZipFile(zpath, "w") as zf:
+        zf.writestr("pkg/SKILL.md", "---\nname: zipped-skill\n---\n# hi\n")
+        zf.writestr("pkg/scripts/run.py", "print('hi')\n")
+    skill = load(str(zpath))
+    try:
+        assert skill.name == "zipped-skill"
+        assert any(c.path.lower().endswith("run.py") for c in skill.components)
+    finally:
+        skill.cleanup()
+
+
+def test_load_zip_rejects_path_traversal(tmp_path):
+    import zipfile
+    zpath = tmp_path / "evil.zip"
+    with zipfile.ZipFile(zpath, "w") as zf:
+        zf.writestr("../escape.txt", "pwned")
+    with pytest.raises(ValueError, match="Unsafe path"):
+        load(str(zpath))
+
+
+def test_load_zip_rejects_symlink(tmp_path):
+    import stat
+    import zipfile
+    zpath = tmp_path / "link.zip"
+    with zipfile.ZipFile(zpath, "w") as zf:
+        info = zipfile.ZipInfo("link")
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16  # mark as a symlink
+        zf.writestr(info, "/etc/passwd")
+    with pytest.raises(ValueError, match="symlink"):
+        load(str(zpath))
+
+
+def test_load_zip_rejects_oversized_extraction(tmp_path, monkeypatch):
+    import zipfile
+    import pharos_skill_inspector.loader as L
+    monkeypatch.setattr(L, "_MAX_EXTRACTED_BYTES", 10)
+    zpath = tmp_path / "bomb.zip"
+    with zipfile.ZipFile(zpath, "w") as zf:
+        zf.writestr("SKILL.md", "x" * 100)
+    with pytest.raises(ValueError, match="extraction cap"):
+        L.load(str(zpath))
+
+
+def test_load_zip_rejects_too_many_entries(tmp_path, monkeypatch):
+    import zipfile
+    import pharos_skill_inspector.loader as L
+    monkeypatch.setattr(L, "_MAX_ZIP_ENTRIES", 2)
+    zpath = tmp_path / "many.zip"
+    with zipfile.ZipFile(zpath, "w") as zf:
+        for i in range(3):
+            zf.writestr(f"f{i}.txt", "x")
+    with pytest.raises(ValueError, match="too many entries"):
+        L.load(str(zpath))
 
 
 def test_cli_clone_failure_returns_2(monkeypatch, capsys):

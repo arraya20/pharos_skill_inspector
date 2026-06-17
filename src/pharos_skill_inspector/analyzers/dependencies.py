@@ -88,17 +88,36 @@ def parse_npm_spec(spec: str) -> tuple[str, bool, bool, bool]:
     Returns ``(version, pinned, is_range, skip_cve)`` where:
       * ``version`` is a concrete version usable for an OSV query (may be "").
       * ``pinned`` is True only for an exact version (no range operators).
-      * ``is_range`` is True for caret/tilde/comparator/wildcard ranges.
+      * ``is_range`` is True for caret/tilde/comparator/wildcard/dist-tag specs.
       * ``skip_cve`` is True for git/url/file/alias specs that aren't registry
         versions and therefore can't be CVE-checked.
+
+    The branches are intentionally explicit (and mutually exclusive) so a
+    wildcard like ``*`` is never confused with a non-registry source.
     """
     spec = (spec or "").strip()
-    if not spec or spec in ("*", "x", "latest", "next", "") or _NPM_NON_REGISTRY.match(spec):
-        # wildcard / dist-tag / non-registry source
-        return "", False, spec not in ("",) and not _NPM_NON_REGISTRY.match(spec), bool(_NPM_NON_REGISTRY.match(spec)) or spec in ("*", "x")
+
+    # Empty spec: nothing to assert.
+    if not spec:
+        return "", False, False, False
+
+    # Non-registry source (git/url/file/link/workspace/alias/...): can't be
+    # CVE-checked and isn't a registry version range -> skip_cve.
+    if _NPM_NON_REGISTRY.match(spec):
+        return "", False, False, True
+
+    # Wildcard / dist-tag (*, x, latest, next): an unpinned *registry* install
+    # with no resolvable version. It is a range (unpinned), but still registry
+    # sourced, so skip_cve stays False (otherwise it'd be misreported as a
+    # git/URL/local source).
+    if spec.lower() in ("*", "x", "latest", "next"):
+        return "", False, True, False
+
+    # Exact, pinned version (1.2.3 / v2.0.0-rc.1 / 1.2.3+build).
     m = _NPM_EXACT.match(spec)
     if m:
         return m.group(1), True, False, False
+
     # Range: caret/tilde/comparators/x-ranges/hyphen ranges/OR.
     lead = _NPM_LEADING_VER.search(spec)
     version = lead.group(1) if lead else ""

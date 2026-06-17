@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import subprocess
 import tempfile
 import urllib.error
@@ -50,6 +51,10 @@ _EXECUTABLE_KINDS = {"python", "javascript", "typescript", "shell", "solidity", 
 # Files/dirs we never scan.
 _SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build", ".idea"}
 _MAX_FILE_BYTES = 2_000_000  # 2 MB safety cap per file
+
+# Zip-extraction safety caps (guard against decompression bombs).
+_MAX_EXTRACTED_BYTES = 100_000_000  # 100 MB cap on cumulative uncompressed size
+_MAX_ZIP_ENTRIES = 10_000           # refuse pathologically large archives
 
 # Remote-source handling (URLs / git repos / remote zips).
 _URL_RE = re.compile(r"^(https?|git|ssh)://", re.IGNORECASE)
@@ -208,6 +213,42 @@ def _iter_files(root: Path):
             yield Path(dirpath) / name
 
 
+def _safe_extract_zip(zip_path: Path, extract_root: Path) -> None:
+    """Extract a zip into ``extract_root``, guarding against the common
+    archive attacks:
+
+      * **Zip Slip / path traversal** — entries that resolve outside
+        ``extract_root`` are rejected (``foo/../../etc``, absolute paths).
+      * **Symlinks** — symlink entries are rejected outright; they can redirect
+        later writes outside the tree or leak host files.
+      * **Decompression bombs** — the entry count and cumulative *uncompressed*
+        size are capped.
+
+    The whole archive is validated before anything is written, so a single bad
+    entry aborts the extraction without leaving partial/unsafe files behind.
+    """
+    base = extract_root.resolve()
+    with zipfile.ZipFile(zip_path) as zf:
+        infos = zf.infolist()
+        if len(infos) > _MAX_ZIP_ENTRIES:
+            raise ValueError(
+                f"Zip archive has too many entries ({len(infos)} > {_MAX_ZIP_ENTRIES}).")
+        total = 0
+        for info in infos:
+            # Unix mode is stored in the high 16 bits of external_attr.
+            mode = (info.external_attr >> 16) & 0xFFFF
+            if stat.S_ISLNK(mode):
+                raise ValueError(f"Refusing to extract symlink from zip: {info.filename}")
+            dest = (base / info.filename).resolve()
+            if not dest.is_relative_to(base):
+                raise ValueError(f"Unsafe path in zip: {info.filename}")
+            total += info.file_size
+            if total > _MAX_EXTRACTED_BYTES:
+                raise ValueError(
+                    f"Zip archive exceeds extraction cap of {_MAX_EXTRACTED_BYTES} bytes.")
+        zf.extractall(extract_root)
+
+
 def load(source: str) -> LoadedSkill:
     """Load a skill from a directory, single file, zip archive, or remote URL.
 
@@ -231,14 +272,7 @@ def load(source: str) -> LoadedSkill:
             tempdir = tempfile.TemporaryDirectory(prefix="psi_")
         extract_root = Path(tempdir.name) / "_extracted"
         extract_root.mkdir(exist_ok=True)
-        with zipfile.ZipFile(src_path) as zf:
-            # Guard against path traversal in zip entries.
-            base = extract_root.resolve()
-            for member in zf.namelist():
-                dest = (base / member).resolve()
-                if not str(dest).startswith(str(base)):
-                    raise ValueError(f"Unsafe path in zip: {member}")
-            zf.extractall(extract_root)
+        _safe_extract_zip(src_path, extract_root)
         root = extract_root
         # If the zip wrapped everything in a single top-level dir, descend.
         entries = [p for p in root.iterdir() if p.name not in _SKIP_DIRS]
