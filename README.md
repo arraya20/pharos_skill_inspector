@@ -125,7 +125,7 @@ src/pharos_skill_inspector/
                    dependencies (OSV.dev), pharos_web3, taint (secret flows)
   analyzers/textproc.py  comment/string masking for token-aware scanning
 examples/          benign-skill (clean) + malicious-skill (demonstrates rules)
-tests/             pytest suite (64 tests, ~86% coverage)
+tests/             pytest suite (70 tests, ~86% coverage)
 .github/workflows/ CI: test matrix (Py 3.10–3.13) + example self-scan gate
 ```
 
